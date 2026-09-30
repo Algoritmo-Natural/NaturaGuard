@@ -1,63 +1,46 @@
-# NaturaGuard — app Android real (não só especificação)
+# NaturaGuard (Android) — Nuno Camara | Algoritmo Natural
 
-Este é o código-fonte real da app Android construída a partir da
-especificação do `mobile-android-agent` (`.claude/agents/mobile-android-agent.md`).
-Pacote: `com.algoritmonatural.naturaguard`.
+App Android de vigilância de segurança local. Pacote `com.algoritmonatural.naturaguard`, versão 0.2.0.
 
-## Aviso honesto sobre o estado disto
+## Estado honesto
 
-Este código foi escrito por um agente Claude Code **sem acesso ao Android
-SDK** — só havia Gradle e Java disponíveis no ambiente onde foi escrito.
-Isto significa:
+- **Compila** e os testes unitários da lógica de comparação passam (8/8), construído com Gradle 8.7, AGP 8.5.2, JDK 17, SDK 34.
+- **Ainda não foi testado num telemóvel real.** Antes de confiar nele, instale o APK de debug e experimente cada função.
+- **Sem permissão `INTERNET`:** o núcleo não comunica com o exterior.
 
-• **Nunca foi compilado.** Não há garantia de que compila sem erros à primeira. É código real e estruturalmente correto ao melhor do meu conhecimento, mas não foi validado por um compilador Kotlin/Android real.
-• **Nunca correu num dispositivo ou emulador.** As quatro funcionalidades (monitor de rede, auditoria de uso, modo dispositivo dedicado, deteção de root) não foram testadas em runtime.
-• Antes de instalar isto no seu telemóvel a sério, abra o projeto no Android Studio, resolva os erros de compilação que aparecerem (é normal haver alguns numa primeira geração destas), e teste cada funcionalidade isoladamente.
+## O que faz
 
-Isto é um ponto de partida real e completo — não um protótipo vazio — mas
-precisa da vossa passagem pelo Android Studio antes de ir para o telemóvel.
-
-## O que está implementado
-
-| Módulo | Ficheiro | O que faz |
+| Função | Onde | Como |
 | --- | --- | --- |
-| Monitor de rede | `vpnmonitor/NetworkMonitorService.kt` | `VpnService` local, sem root. Lê pacotes IPv4 do TUN, regista ligações a portas de gestão suspeitas (23/3389), devolve todos os pacotes inalterados (não bloqueia nada). |
-| Auditoria de uso | `usageaudit/UsageAuditManager.kt` | Lê `UsageStatsManager` das últimas 24h, só depois de confirmar que `PACKAGE_USAGE_STATS` foi concedido manualmente pelo utilizador. |
-| Modo dispositivo dedicado | `deviceowner/DeviceOwnerReceiver.kt` | `DeviceAdminReceiver` para aprovisionamento Device Owner. Regista eventos de ativação/desativação. |
-| Deteção de root | `rootdetection/RootDetector.kt` | Heurística de ficheiros/binário `su` conhecidos. É um sinal, não uma garantia — a mesma honestidade que o `netguard/README.md` já assume para a sua própria lista de MAC autorizados. |
-| Eventos partilhados | `shared/EventLogger.kt` | Grava `events.jsonl` no armazenamento privado da app, com o mesmo formato de severidade (`critico`/`aviso`/`info`) do `netguard/netguard.py`, para que um relatório futuro possa juntar os dois. |
+| Login | `MainActivity.kt` | Só abre com biometria ou PIN/padrão do próprio telemóvel (`BiometricPrompt`). Volta a bloquear ao sair. Bloqueia capturas de ecrã. Tentativas falhadas de abrir a app geram alerta. |
+| Tentativas de desbloqueio | `admin/GuardAdminReceiver.kt` | Administrador do dispositivo só com `watch-login`: avisa de cada PIN errado no ecrã de bloqueio (3 em 10 min = crítico). Não pode apagar nem bloquear nada. O Android marca este mecanismo como descontinuado; pode não funcionar em todas as versões/marcas. |
+| Vigilância periódica | `scan/` | A cada 15 min (WorkManager) compara com a referência: serviços de acessibilidade novos, apps administradoras novas, leitores de notificações novos, apps instaladas fora da loja, ADB/opções de programador, root, sem bloqueio de ecrã, patch de segurança com mais de 120 dias. |
+| Alertas | `shared/` | `events.jsonl` só de acrescentar; marcar como visto grava em `marks.txt` sem reescrever nada. Notificação para aviso e crítico. |
+| Root | `rootdetection/` | Heurística; é um sinal, não uma prova. |
+| Uso de apps | `usageaudit/` | Só depois de o utilizador conceder o acesso nas Definições. |
 
-## O que NÃO está implementado (por regra rígida do agente, não por falta de tempo)
+## Limites
 
-• Nenhuma leitura de notificações de outra app (`NotificationListenerService`).
-• Nenhum uso de `AccessibilityService` para vigilância.
+- A referência inicial assume que o telemóvel estava limpo na primeira verificação.
+- Não lê o conteúdo de notificações nem usa `AccessibilityService` para vigiar.
+- Root escondido pode enganar a heurística.
+- `QUERY_ALL_PACKAGES` é necessária para listar apps instaladas (a Play Store restringe-a; esta app não se destina à loja).
 
-Estas duas ficam de fora mesmo com o modo Device Owner ativo, porque o
-`mobile-android-agent` exige também consentimento demonstrável de quem usa
-o dispositivo — algo que não pode ser verificado só por código. Implementá-las
-exigiria uma decisão humana explícita, caso a caso.
+## Removido nesta versão
+
+- Monitor VPN (reenviava pacotes para o túnel e cortaria a internet).
+- Modo Device Owner (exige aprovisionamento de fábrica e não era usado).
 
 ## Como compilar
 
-1) Instale o [Android Studio](https://developer.android.com/studio).
-2) 2) Abra a pasta `naturaguard-android/` como projeto.
-   3) 3) Deixe o Android Studio sincronizar o Gradle (vai pedir para instalar o SDK 34 e o Build Tools correspondentes, se ainda não os tiver).
-      4) 4) **Build → Make Project** — corrija os erros que aparecerem primeiro.
-         5) 5) Ligue o telemóvel por USB com Depuração USB ativa, ou use um emulador.
-            6) 6) **Run → Run 'app'**.
-              
-               7) ## Testar cada funcionalidade
-              
-               8) • **Monitor de rede**: botão "Iniciar monitor de rede" pede permissão de VPN do Android — é normal aparecer o ícone de chave/VPN na barra de estado enquanto está ativo.
-               9) • **Deteção de root**: só é significativo num telemóvel com root real; num telemóvel normal deve devolver "sem indícios".
-               10) • **Auditoria de uso**: primeira vez vai pedir para ir a Definições → Acesso a dados de utilização e ativar manualmente para o NaturaGuard.
-               11) • **Modo dispositivo dedicado**: só pode ser aprovisionado num dispositivo em reset de fábrica, via QR/NFC ou `adb shell dpm set-device-owner com.algoritmonatural.naturaguard/.deviceowner.DeviceOwnerReceiver` — não se torna Device Owner só por abrir a app.
-              
-               12) ## Relatório de conformidade
-              
-               13) Antes de submeter à Play Store, isto precisa de passar pelo
-               14) `security-review-agent` (justificação de permissões sensíveis) e o texto
-               15) resultante deve ir para a declaração de utilização de permissões da Play
-               16) Console — ver `.claude/agents/mobile-android-agent.md`, secção "Output
-               17) esperado".
-               18) 
+```
+set JAVA_HOME=<JDK 17>
+set ANDROID_HOME=<SDK com platforms;android-34 e build-tools;34.0.0>
+gradle :app:testDebugUnitTest :app:assembleDebug
+```
+
+O APK fica em `app/build/outputs/apk/debug/app-debug.apk`.
+
+## Próximo passo
+
+Integrar o repositório WireGuard (túnel VPN com configuração cifrada pelo Keystore).
