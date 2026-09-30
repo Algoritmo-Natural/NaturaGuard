@@ -11,34 +11,46 @@ import android.content.pm.PackageManager
 import android.os.Build
 import com.algoritmonatural.naturaguard.MainActivity
 
-/** Regista o alerta e, se for aviso ou pior, mostra uma notificacao. */
+/**
+ * Regista o alerta e, se for aviso ou pior, mostra uma notificacao.
+ * A notificacao nunca leva pormenores: quem tem o telemovel na mao (ecra de
+ * bloqueio) ou uma app espia com acesso as notificacoes nao fica a saber o
+ * que foi detetado. Os pormenores so aparecem dentro da app, apos o login.
+ */
 object Notifier {
     private const val CHANNEL = "alertas"
 
     fun raise(context: Context, event: SecurityEvent) {
         val app = context.applicationContext
         val id = EventLogger(app).log(event)
-        if (event.severity.rank >= Severity.WARNING.rank) show(app, id, event)
+        if (event.severity.rank >= Severity.WARNING.rank) show(app, id, event.severity)
     }
 
-    private fun show(context: Context, id: String, event: SecurityEvent) {
+    private fun show(context: Context, id: String, severity: Severity) {
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) return
+        ) return // o ecra principal mostra "Notificacoes DESLIGADAS"
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Alertas de seguranca", NotificationManager.IMPORTANCE_HIGH)
+            NotificationChannel(CHANNEL, "Alertas de seguranca", NotificationManager.IMPORTANCE_HIGH).apply {
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+            }
         )
         val open = PendingIntent.getActivity(
             context, 0, Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val title = if (event.severity == Severity.CRITICAL) "NaturaGuard: CRITICO" else "NaturaGuard: aviso"
+        val title = if (severity == Severity.CRITICAL) "Alerta importante" else "Novo alerta"
+        val publicVersion = Notification.Builder(context, CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setContentTitle("NaturaGuard")
+            .build()
         val notification = Notification.Builder(context, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentTitle(title)
-            .setContentText(event.message)
-            .setStyle(Notification.BigTextStyle().bigText(event.message))
+            .setContentText("Abra o NaturaGuard para ver.")
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion)
             .setContentIntent(open)
             .setAutoCancel(true)
             .build()

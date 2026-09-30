@@ -78,6 +78,6 @@ object Attempts {
         return n
     }
 
-    private fun recent(text: String?, now: Long): List<Long> =
+    internal fun recent(text: String?, now: Long): List<Long> =
         (text ?: "").split(',').mapNotNull { it.toLongOrNull() }.filter { now - it in 0..WINDOW_MS }
 }

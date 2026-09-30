@@ -11,9 +11,23 @@ class DiffTest {
     private fun types(list: List<Finding>) = list.map { it.type }
 
     @Test
-    fun primeiraVezSoCriaReferencia() {
-        val out = Diff.compare(null, clean.copy(accessibility = setOf("x/y"), sideloaded = setOf("a.b")))
-        assertEquals(listOf("referencia_criada"), types(out))
+    fun primeiraVezTelemovelLimpoSoCriaReferencia() {
+        assertEquals(listOf("referencia_criada"), types(Diff.compare(null, clean)))
+    }
+
+    @Test
+    fun primeiraVezMostraAcessosQueJaExistiam() {
+        val out = Diff.compare(null, clean.copy(accessibility = setOf("spy/.Svc"), sideloaded = setOf("a.b")))
+        val inv = out.first { it.type == "inventario_inicial" }
+        assertEquals(Severity.WARNING, inv.severity)
+        assertTrue("spy/.Svc" in inv.message && "a.b" in inv.message)
+        assertTrue("referencia_criada" in types(out))
+    }
+
+    @Test
+    fun primeiraVezEstadosMausSaoReportados() {
+        val out = Diff.compare(null, clean.copy(adbEnabled = true, rootSuspected = true, patchOld = true))
+        assertTrue(types(out).containsAll(listOf("adb_ativo", "root_suspeito", "patch_antigo")))
     }
 
     @Test

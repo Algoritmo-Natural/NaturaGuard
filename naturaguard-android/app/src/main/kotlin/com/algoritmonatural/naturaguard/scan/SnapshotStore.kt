@@ -4,32 +4,43 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** Resultado de ler a referencia: nunca confundir "nao existe" com "estragada". */
+sealed class Loaded {
+    object Missing : Loaded()
+    object Corrupted : Loaded()
+    data class Ok(val snapshot: Snapshot) : Loaded()
+}
+
 /** Guarda a ultima fotografia em armazenamento privado da app. */
 class SnapshotStore(context: Context) {
     private val prefs = context.getSharedPreferences("scan", Context.MODE_PRIVATE)
 
-    fun load(): Snapshot? {
-        val text = prefs.getString("snapshot", null) ?: return null
+    fun load(): Loaded {
+        val text = prefs.getString("snapshot", null) ?: return Loaded.Missing
         return try {
             val o = JSONObject(text)
-            Snapshot(
-                accessibility = set(o, "accessibility"),
-                admins = set(o, "admins"),
-                listeners = set(o, "listeners"),
-                sideloaded = set(o, "sideloaded"),
-                adbEnabled = o.getBoolean("adb"),
-                devOptions = o.getBoolean("dev"),
-                deviceSecure = o.getBoolean("secure"),
-                patchOld = o.getBoolean("patchOld"),
-                rootSuspected = o.getBoolean("root"),
+            // opt* com valores por omissao: campos novos de versoes futuras nao estragam a referencia.
+            Loaded.Ok(
+                Snapshot(
+                    accessibility = set(o, "accessibility"),
+                    admins = set(o, "admins"),
+                    listeners = set(o, "listeners"),
+                    sideloaded = set(o, "sideloaded"),
+                    adbEnabled = o.optBoolean("adb", false),
+                    devOptions = o.optBoolean("dev", false),
+                    deviceSecure = o.optBoolean("secure", true),
+                    patchOld = o.optBoolean("patchOld", false),
+                    rootSuspected = o.optBoolean("root", false),
+                )
             )
         } catch (_: Exception) {
-            null
+            Loaded.Corrupted
         }
     }
 
     fun save(s: Snapshot) {
         val o = JSONObject()
+            .put("version", 1)
             .put("accessibility", JSONArray(s.accessibility.toList()))
             .put("admins", JSONArray(s.admins.toList()))
             .put("listeners", JSONArray(s.listeners.toList()))
@@ -43,7 +54,7 @@ class SnapshotStore(context: Context) {
     }
 
     private fun set(o: JSONObject, key: String): Set<String> {
-        val a = o.getJSONArray(key)
+        val a = o.optJSONArray(key) ?: return emptySet()
         return (0 until a.length()).map { a.getString(it) }.toSet()
     }
 }

@@ -18,17 +18,31 @@ data class Snapshot(
 data class Finding(val type: String, val severity: Severity, val message: String)
 
 /**
- * Compara a fotografia nova com a anterior. Sem anterior (primeira vez)
- * so reporta estados maus absolutos e cria a referencia; depois so avisa
- * de mudancas, para nao repetir o mesmo alerta de 15 em 15 minutos.
+ * Compara a fotografia nova com a anterior. Na primeira vez a ameaca pode ja
+ * existir antes da instalacao, por isso mostra o inventario inicial como aviso
+ * (para o dono confirmar) e reporta estados maus; depois so avisa de mudancas,
+ * para nao repetir o mesmo alerta de 15 em 15 minutos.
  */
 object Diff {
     fun compare(old: Snapshot?, now: Snapshot): List<Finding> {
         val out = mutableListOf<Finding>()
         val base = old ?: Snapshot()
 
-        // Na primeira execucao a lista atual e a referencia (nao alarma).
-        if (old != null) {
+        if (old == null) {
+            val parts = listOf(
+                "acessibilidade" to now.accessibility,
+                "administradores" to now.admins,
+                "leem notificações" to now.listeners,
+                "fora da loja" to now.sideloaded,
+            ).filter { it.second.isNotEmpty() }
+                .joinToString("; ") { (label, items) -> "$label: ${items.sorted().joinToString(", ")}" }
+            if (parts.isNotEmpty()) {
+                out += Finding(
+                    "inventario_inicial", Severity.WARNING,
+                    "Confirme que reconhece estas apps com acessos especiais (já existiam ao instalar): $parts.",
+                )
+            }
+        } else {
             (now.accessibility - old.accessibility).forEach {
                 out += Finding(
                     "acessibilidade_nova", Severity.CRITICAL,

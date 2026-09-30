@@ -12,21 +12,12 @@ import com.algoritmonatural.naturaguard.admin.GuardAdminReceiver
 import com.algoritmonatural.naturaguard.rootdetection.RootDetector
 import com.algoritmonatural.naturaguard.shared.Notifier
 import com.algoritmonatural.naturaguard.shared.SecurityEvent
+import com.algoritmonatural.naturaguard.shared.Severity
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 
 /** Le o estado atual, compara com a referencia e levanta alertas. */
 object Scanner {
-    private val trustedInstallers = setOf(
-        "com.android.vending",
-        "com.sec.android.app.samsungapps",
-        "com.amazon.venezia",
-        "com.huawei.appmarket",
-        "com.xiaomi.mipicks",
-        "com.heytap.market",
-        "com.oppo.market",
-        "com.bbk.appstore",
-    )
 
     /** Devolve os achados desta verificacao (ja registados e notificados). */
     @Synchronized
@@ -34,7 +25,18 @@ object Scanner {
         val app = context.applicationContext
         val store = SnapshotStore(app)
         val now = collect(app)
-        val findings = Diff.compare(store.load(), now)
+        val findings = when (val loaded = store.load()) {
+            is Loaded.Ok -> Diff.compare(loaded.snapshot, now)
+            Loaded.Missing -> Diff.compare(null, now)
+            // Estragada: nao a tratar como "primeira vez" em silencio. Compara com um
+            // telemovel limpo, para que tudo o que existe apareca como novo.
+            Loaded.Corrupted -> listOf(
+                Finding(
+                    "referencia_corrompida", Severity.WARNING,
+                    "A referência guardada estava estragada e foi recriada. Reveja os alertas seguintes.",
+                )
+            ) + Diff.compare(Snapshot(), now)
+        }
         findings.forEach {
             Notifier.raise(app, SecurityEvent(it.type, it.severity, it.message, "scan"))
         }
@@ -81,17 +83,17 @@ object Scanner {
 
     private fun isTrusted(context: Context, pkg: String): Boolean {
         val pm = context.packageManager
-        val installer = try {
+        return try {
             if (Build.VERSION.SDK_INT >= 30) {
-                pm.getInstallSourceInfo(pkg).installingPackageName
+                val info = pm.getInstallSourceInfo(pkg)
+                InstallTrust.isTrusted(Build.VERSION.SDK_INT, info.installingPackageName, info.initiatingPackageName)
             } else {
                 @Suppress("DEPRECATION")
-                pm.getInstallerPackageName(pkg)
+                InstallTrust.isTrusted(Build.VERSION.SDK_INT, pm.getInstallerPackageName(pkg), null)
             }
         } catch (_: Exception) {
-            null
+            false
         }
-        return installer != null && installer in trustedInstallers
     }
 
     private fun patchAgeDays(): Long? = try {

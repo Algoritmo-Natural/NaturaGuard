@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tema AppCompat: o dialogo de impressao digital do androidx.biometric (Android 8) exige-o. -->
+    <style name="Theme.NaturaGuard" parent="Theme.AppCompat.Light.DarkActionBar" />
+</resources>

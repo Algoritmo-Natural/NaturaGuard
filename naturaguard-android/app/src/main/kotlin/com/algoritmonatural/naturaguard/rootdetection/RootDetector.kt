@@ -35,7 +35,7 @@ class RootDetector(private val context: Context) {
             Notifier.raise(
                 context,
                 SecurityEvent(
-                    type = "root_suspected",
+                    type = "root_suspeito",
                     severity = Severity.CRITICAL,
                     message = "Indicios de root neste telemovel (heuristica, nao e atestacao criptografica).",
                     source = "rootdetection",

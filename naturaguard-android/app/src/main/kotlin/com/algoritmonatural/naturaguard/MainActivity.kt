@@ -2,22 +2,26 @@ package com.algoritmonatural.naturaguard
 
 import android.Manifest
 import android.app.admin.DevicePolicyManager
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.provider.Settings
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
 import com.algoritmonatural.naturaguard.admin.GuardAdminReceiver
 import com.algoritmonatural.naturaguard.rootdetection.RootDetector
 import com.algoritmonatural.naturaguard.scan.ScanWorker
@@ -27,46 +31,115 @@ import com.algoritmonatural.naturaguard.shared.EventLogger
 import com.algoritmonatural.naturaguard.shared.Notifier
 import com.algoritmonatural.naturaguard.shared.SecurityEvent
 import com.algoritmonatural.naturaguard.shared.Severity
+import com.algoritmonatural.naturaguard.shared.localTime
 import com.algoritmonatural.naturaguard.usageaudit.UsageAuditManager
 
 /**
  * A app só abre depois de o utilizador provar quem é com o desbloqueio do
- * próprio telemóvel (biometria ou PIN/padrão). Volta a bloquear ao sair.
+ * próprio telemóvel (biometria ou PIN/padrão). Volta a bloquear ao sair;
+ * a única exceção é uma ida curta às Definições pedida pela própria app.
  */
-class MainActivity : FragmentActivity() {
+class MainActivity : AppCompatActivity() {
 
     private val authenticators =
         BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
 
     private lateinit var logger: EventLogger
+    private lateinit var prompt: BiometricPrompt
     private lateinit var lockView: LinearLayout
     private lateinit var lockText: TextView
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
+    private lateinit var notifWarning: LinearLayout
     private lateinit var alertsBox: LinearLayout
 
     private var unlocked = false
     private var authenticating = false
     private var leavingForSettings = false
+    private var stoppedAt = 0L
+    private var failedReads = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         logger = EventLogger(applicationContext)
+        // Criado uma só vez no onCreate: numa rotação o Android volta a ligar o callback ao prompt aberto.
+        prompt = BiometricPrompt(this, ContextCompat.getMainExecutor(this), callback)
+        // Só numa rotação (mesma sessão) se conserva o estado; nunca depois de a app ir para segundo plano.
+        unlocked = savedInstanceState?.getBoolean(KEY_UNLOCKED) ?: false
+        authenticating = savedInstanceState?.getBoolean(KEY_AUTHENTICATING) ?: false
         buildUi()
+        if (unlocked) showContent()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (isChangingConfigurations) {
+            outState.putBoolean(KEY_UNLOCKED, unlocked)
+            outState.putBoolean(KEY_AUTHENTICATING, authenticating)
+        }
     }
 
     override fun onStart() {
         super.onStart()
+        if (unlocked && leavingForSettings && SystemClock.elapsedRealtime() - stoppedAt > SETTINGS_GRACE_MS) {
+            lock()
+        }
+        leavingForSettings = false
         if (!unlocked && !authenticating) authenticate()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (unlocked) refresh()
     }
 
     override fun onStop() {
         super.onStop()
-        if (!authenticating && !leavingForSettings) lock()
+        if (isChangingConfigurations || authenticating) return
+        stoppedAt = SystemClock.elapsedRealtime()
+        // Sair por Home/recentes (ou qualquer saída que não seja a ida às Definições) bloqueia já.
+        if (!leavingForSettings) lock()
     }
 
     // ---------- bloqueio ----------
+
+    private val callback = object : BiometricPrompt.AuthenticationCallback() {
+        override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+            authenticating = false
+            failedReads = 0
+            unlock()
+        }
+
+        override fun onAuthenticationFailed() {
+            // Chamado a cada leitura de dedo que não coincide; só a 3.ª na mesma tentativa conta como alerta.
+            failedReads++
+            if (failedReads == FAILED_READS_ALERT) {
+                Notifier.raise(
+                    applicationContext,
+                    SecurityEvent(
+                        "entrada_app_falhada", Severity.WARNING,
+                        "$FAILED_READS_ALERT leituras falhadas seguidas ao abrir o NaturaGuard.", "auth",
+                    ),
+                )
+            }
+        }
+
+        override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+            authenticating = false
+            failedReads = 0
+            if (errorCode == BiometricPrompt.ERROR_LOCKOUT || errorCode == BiometricPrompt.ERROR_LOCKOUT_PERMANENT) {
+                Notifier.raise(
+                    applicationContext,
+                    SecurityEvent(
+                        "entrada_app_bloqueada", Severity.CRITICAL,
+                        "Demasiadas tentativas falhadas de abrir o NaturaGuard: acesso bloqueado pelo Android.", "auth",
+                    ),
+                )
+            }
+            lockText.text = "Bloqueado. Toque em Desbloquear."
+        }
+    }
 
     private fun authenticate() {
         val can = BiometricManager.from(this).canAuthenticate(authenticators)
@@ -75,36 +148,7 @@ class MainActivity : FragmentActivity() {
             return
         }
         authenticating = true
-        val prompt = BiometricPrompt(this, ContextCompat.getMainExecutor(this), object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                authenticating = false
-                unlock()
-            }
-
-            override fun onAuthenticationFailed() {
-                Notifier.raise(
-                    applicationContext,
-                    SecurityEvent(
-                        "entrada_app_falhada", Severity.WARNING,
-                        "Tentativa falhada de abrir o NaturaGuard.", "auth",
-                    ),
-                )
-            }
-
-            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                authenticating = false
-                if (errorCode == BiometricPrompt.ERROR_LOCKOUT || errorCode == BiometricPrompt.ERROR_LOCKOUT_PERMANENT) {
-                    Notifier.raise(
-                        applicationContext,
-                        SecurityEvent(
-                            "entrada_app_bloqueada", Severity.CRITICAL,
-                            "Demasiadas tentativas falhadas de abrir o NaturaGuard: acesso bloqueado pelo Android.", "auth",
-                        ),
-                    )
-                }
-                lockText.text = "Bloqueado. Toque em Desbloquear."
-            }
-        })
+        failedReads = 0
         prompt.authenticate(
             BiometricPrompt.PromptInfo.Builder()
                 .setTitle("NaturaGuard")
@@ -116,15 +160,17 @@ class MainActivity : FragmentActivity() {
 
     private fun unlock() {
         unlocked = true
-        lockView.visibility = View.GONE
-        content.visibility = View.VISIBLE
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
+        showContent()
+        if (Build.VERSION.SDK_INT >= 33 && !notificationsAllowed()) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         ScanWorker.schedule(applicationContext)
         refresh()
+    }
+
+    private fun showContent() {
+        lockView.visibility = View.GONE
+        content.visibility = View.VISIBLE
     }
 
     private fun lock() {
@@ -132,6 +178,11 @@ class MainActivity : FragmentActivity() {
         content.visibility = View.GONE
         lockView.visibility = View.VISIBLE
         lockText.text = "Bloqueado."
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (unlocked) refresh()
     }
 
     // ---------- ecrã ----------
@@ -150,12 +201,22 @@ class MainActivity : FragmentActivity() {
         }
 
         status = TextView(this).apply { textSize = 16f }
+        notifWarning = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            addView(TextView(context).apply {
+                text = "\nNotificações DESLIGADAS: os alertas não chegam até abrir a app."
+                setTextColor(Color.RED)
+            })
+            addView(button("Ligar notificações") { openNotificationSettings() })
+        }
         alertsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
             addView(TextView(context).apply { text = "NaturaGuard"; textSize = 24f })
             addView(status)
+            addView(notifWarning)
             addView(button("Verificar agora") { scanNow() })
             addView(button("Ativar deteção de tentativas de desbloqueio") { enableAdmin() })
             addView(button("Verificar root") { rootCheck() })
@@ -175,17 +236,21 @@ class MainActivity : FragmentActivity() {
             setOnClickListener { action() }
         }
 
+    private fun notificationsAllowed(): Boolean =
+        Build.VERSION.SDK_INT < 33 ||
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
     private fun refresh() {
-        val active = isAdminActive()
-        val pending = logger.unmarkedImportantCount()
-        status.text = "Deteção de tentativas de desbloqueio: " + (if (active) "ATIVA" else "INATIVA") +
+        val alerts = logger.alerts(200)
+        val pending = alerts.count { !it.marked && it.severity.rank >= Severity.WARNING.rank }
+        status.text = "Deteção de tentativas de desbloqueio: " + (if (isAdminActive()) "ATIVA" else "INATIVA") +
             "\nAlertas por ver: $pending"
+        notifWarning.visibility = if (notificationsAllowed()) View.GONE else View.VISIBLE
         alertsBox.removeAllViews()
-        val alerts = logger.alerts(50)
         if (alerts.isEmpty()) {
             alertsBox.addView(TextView(this).apply { text = "Sem alertas." })
         }
-        alerts.forEach { alertsBox.addView(alertRow(it)) }
+        alerts.take(50).forEach { alertsBox.addView(alertRow(it)) }
     }
 
     private fun alertRow(alert: Alert): TextView = TextView(this).apply {
@@ -194,7 +259,7 @@ class MainActivity : FragmentActivity() {
             Severity.WARNING -> "AVISO"
             Severity.INFO -> "info"
         }
-        text = (if (alert.marked) "✓ " else "") + "[$tag] ${alert.timestamp}\n${alert.message}"
+        text = (if (alert.marked) "✓ " else "") + "[$tag] ${localTime(alert.timestamp)}\n${alert.message}"
         setPadding(0, 24, 0, 24)
         setTextColor(
             when {
@@ -215,10 +280,17 @@ class MainActivity : FragmentActivity() {
     private fun scanNow() {
         status.text = "A verificar…"
         Thread {
-            val findings = Scanner.run(applicationContext)
+            val message = try {
+                val findings = Scanner.run(applicationContext)
+                if (findings.isEmpty()) "Sem alterações desde a última verificação." else "${findings.size} resultado(s)."
+            } catch (e: Exception) {
+                "Erro na verificação: ${e.javaClass.simpleName}"
+            }
             runOnUiThread {
-                refresh()
-                if (findings.isEmpty()) status.text = status.text.toString() + "\nSem alterações desde a última verificação."
+                if (unlocked) {
+                    refresh()
+                    status.text = status.text.toString() + "\n" + message
+                }
             }
         }.start()
     }
@@ -233,8 +305,7 @@ class MainActivity : FragmentActivity() {
             status.text = "A deteção de tentativas de desbloqueio já está ativa."
             return
         }
-        leavingForSettings = true // o ecrã do sistema tira a app do primeiro plano
-        startActivity(
+        openSettings(
             Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
                 .putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent())
                 .putExtra(
@@ -245,10 +316,23 @@ class MainActivity : FragmentActivity() {
         )
     }
 
-    override fun onResume() {
-        super.onResume()
-        leavingForSettings = false
-        if (unlocked) refresh()
+    private fun openNotificationSettings() {
+        openSettings(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+    }
+
+    /** Abre um ecrã do sistema; se o fabricante o removeu, cai para as definições da app. */
+    private fun openSettings(intent: Intent) {
+        leavingForSettings = true
+        try {
+            startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            try {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+            } catch (_: ActivityNotFoundException) {
+                leavingForSettings = false
+                status.text = "Este telemóvel não tem esse ecrã de Definições."
+            }
+        }
     }
 
     private fun rootCheck() {
@@ -261,13 +345,19 @@ class MainActivity : FragmentActivity() {
     private fun usageAudit() {
         val manager = UsageAuditManager(this)
         if (!manager.hasUsageAccess()) {
-            leavingForSettings = true
-            startActivity(manager.buildGrantAccessIntent())
+            openSettings(manager.buildGrantAccessIntent())
             status.text = "Conceda 'Dados de utilização' ao NaturaGuard nas Definições e volte."
             return
         }
         val summaries = manager.auditLast24Hours()
         refresh()
         status.text = status.text.toString() + "\nAuditoria: ${summaries.size} apps com atividade nas últimas 24h."
+    }
+
+    private companion object {
+        const val KEY_UNLOCKED = "unlocked"
+        const val KEY_AUTHENTICATING = "authenticating"
+        const val SETTINGS_GRACE_MS = 60_000L
+        const val FAILED_READS_ALERT = 3
     }
 }

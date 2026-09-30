@@ -11,8 +11,13 @@ android {
         applicationId = "com.algoritmonatural.naturaguard"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
+    }
+
+    lint {
+        abortOnError = true
+        checkReleaseBuilds = true
     }
 
     buildTypes {
@@ -35,6 +40,7 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.work:work-runtime:2.9.1")
 

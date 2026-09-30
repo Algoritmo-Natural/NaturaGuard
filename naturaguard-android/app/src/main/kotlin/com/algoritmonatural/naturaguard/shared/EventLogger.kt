@@ -42,19 +42,31 @@ data class Alert(
     val marked: Boolean,
 )
 
+/** Converte o carimbo UTC gravado para a hora local do telemovel (ex.: Acores). */
+fun localTime(utc: String): String = try {
+    val parser = SimpleDateFormat(UTC_PATTERN, Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
+    SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(parser.parse(utc)!!)
+} catch (_: Exception) {
+    utc
+}
+
+private const val UTC_PATTERN = "yyyy-MM-dd'T'HH:mm:ss'Z'"
+
 /**
  * events.jsonl (so acrescenta) + marks.txt (ids marcados, so acrescenta).
- * Marcar nunca reescreve o registo de alertas.
+ * Marcar nunca reescreve o registo de alertas. O Worker, o recetor de admin e
+ * o ecra criam instancias diferentes, por isso o cadeado e partilhado por todas.
  */
 class EventLogger(context: Context) {
-    private val eventsFile = File(context.filesDir, "events.jsonl")
-    private val marksFile = File(context.filesDir, "marks.txt")
+    private val dir = context.filesDir
+    private val eventsFile = File(dir, "events.jsonl")
+    private val oldFile = File(dir, "events.old.jsonl")
+    private val marksFile = File(dir, "marks.txt")
 
-    @Synchronized
-    fun log(event: SecurityEvent): String {
+    fun log(event: SecurityEvent): String = synchronized(LOCK) {
         rotateIfBig()
         val id = UUID.randomUUID().toString()
-        val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+        val format = SimpleDateFormat(UTC_PATTERN, Locale.US)
         format.timeZone = TimeZone.getTimeZone("UTC")
         val json = JSONObject().apply {
             put("id", id)
@@ -66,20 +78,18 @@ class EventLogger(context: Context) {
             if (event.extra.isNotEmpty()) put("extra", JSONObject(event.extra))
         }
         eventsFile.appendText(json.toString() + "\n")
-        return id
+        id
     }
 
-    @Synchronized
-    fun mark(id: String) {
+    fun mark(id: String) = synchronized(LOCK) {
         if (id.matches(ID_PATTERN)) marksFile.appendText(id + "\n")
     }
 
-    /** Mais recentes primeiro. Linhas corrompidas sao ignoradas. */
-    @Synchronized
-    fun alerts(limit: Int = 100): List<Alert> {
-        if (!eventsFile.exists()) return emptyList()
+    /** Mais recentes primeiro, incluindo o ficheiro rodado. Linhas corrompidas sao ignoradas. */
+    fun alerts(limit: Int = 100): List<Alert> = synchronized(LOCK) {
         val marked = if (marksFile.exists()) marksFile.readLines().toHashSet() else emptySet<String>()
-        return eventsFile.readLines().asReversed().mapNotNull { line ->
+        val lines = listOf(oldFile, eventsFile).filter { it.exists() }.flatMap { it.readLines() }
+        lines.asReversed().asSequence().mapNotNull { line ->
             try {
                 val o = JSONObject(line)
                 val id = o.getString("id")
@@ -95,19 +105,18 @@ class EventLogger(context: Context) {
             } catch (_: Exception) {
                 null
             }
-        }.take(limit)
+        }.take(limit).toList()
     }
-
-    fun unmarkedImportantCount(): Int =
-        alerts(500).count { !it.marked && it.severity.rank >= Severity.WARNING.rank }
 
     private fun rotateIfBig() {
         if (eventsFile.exists() && eventsFile.length() > MAX_BYTES) {
-            eventsFile.renameTo(File(eventsFile.parentFile, "events.old.jsonl"))
+            oldFile.delete()
+            eventsFile.renameTo(oldFile)
         }
     }
 
     private companion object {
+        val LOCK = Any()
         const val MAX_BYTES = 1_000_000L
         val ID_PATTERN = Regex("[0-9a-f-]{36}")
     }
