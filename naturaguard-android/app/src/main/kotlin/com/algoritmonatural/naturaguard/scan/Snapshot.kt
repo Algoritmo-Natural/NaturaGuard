@@ -8,6 +8,8 @@ data class Snapshot(
     val admins: Set<String> = emptySet(),
     val listeners: Set<String> = emptySet(),
     val sideloaded: Set<String> = emptySet(),
+    /** Certificados de autoridade instalados pelo utilizador (podem intercetar HTTPS). */
+    val userCerts: Set<String> = emptySet(),
     val adbEnabled: Boolean = false,
     val devOptions: Boolean = false,
     val deviceSecure: Boolean = true,
@@ -34,6 +36,7 @@ object Diff {
                 "administradores" to now.admins,
                 "leem notificações" to now.listeners,
                 "fora da loja" to now.sideloaded,
+                "certificados instalados pelo utilizador" to now.userCerts,
             ).filter { it.second.isNotEmpty() }
                 .joinToString("; ") { (label, items) -> "$label: ${items.sorted().joinToString(", ")}" }
             if (parts.isNotEmpty()) {
@@ -65,6 +68,12 @@ object Diff {
                 out += Finding(
                     "app_fora_da_loja", Severity.WARNING,
                     "App instalada fora da loja oficial: $it.",
+                )
+            }
+            (now.userCerts - old.userCerts).forEach {
+                out += Finding(
+                    "certificado_utilizador_novo", Severity.CRITICAL,
+                    "Novo certificado de seguranca instalado: $it. Permite intercetar e ler ligacoes cifradas (HTTPS).",
                 )
             }
         }

@@ -77,4 +77,17 @@ class DiffTest {
         val old = clean.copy(accessibility = setOf("a/b"), admins = setOf("c/d"))
         assertTrue(Diff.compare(old, clean).isEmpty())
     }
+
+    @Test
+    fun certificadoNovoDoUtilizadorECritico() {
+        val out = Diff.compare(clean, clean.copy(userCerts = setOf("CN=Proxy (user:abc.0)")))
+        assertEquals(listOf("certificado_utilizador_novo"), types(out))
+        assertEquals(Severity.CRITICAL, out[0].severity)
+    }
+
+    @Test
+    fun primeiraVezMostraCertificadosQueJaExistiam() {
+        val out = Diff.compare(null, clean.copy(userCerts = setOf("CN=Empresa (user:1.0)")))
+        assertTrue(out.first { it.type == "inventario_inicial" }.message.contains("CN=Empresa"))
+    }
 }

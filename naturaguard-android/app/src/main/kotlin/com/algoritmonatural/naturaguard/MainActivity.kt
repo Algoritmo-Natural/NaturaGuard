@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
+import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -18,6 +19,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
@@ -33,6 +35,7 @@ import com.algoritmonatural.naturaguard.shared.SecurityEvent
 import com.algoritmonatural.naturaguard.shared.Severity
 import com.algoritmonatural.naturaguard.shared.localTime
 import com.algoritmonatural.naturaguard.usageaudit.UsageAuditManager
+import com.algoritmonatural.naturaguard.wireguard.SecureTunnelManager
 
 /**
  * A app só abre depois de o utilizador provar quem é com o desbloqueio do
@@ -52,6 +55,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var notifWarning: LinearLayout
     private lateinit var alertsBox: LinearLayout
+    private lateinit var tunnelStatus: TextView
+    private lateinit var tunnel: SecureTunnelManager
 
     private var unlocked = false
     private var authenticating = false
@@ -59,10 +64,19 @@ class MainActivity : AppCompatActivity() {
     private var stoppedAt = 0L
     private var failedReads = 0
 
+    // Registados antes do onStart, como o Android exige.
+    private val pickConfig = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importConfig(uri)
+    }
+    private val vpnConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (VpnService.prepare(this) == null) tunnel.connect() else tunnelStatus.text = "Túnel: autorização VPN recusada."
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         logger = EventLogger(applicationContext)
+        tunnel = SecureTunnelManager(applicationContext)
         // Criado uma só vez no onCreate: numa rotação o Android volta a ligar o callback ao prompt aberto.
         prompt = BiometricPrompt(this, ContextCompat.getMainExecutor(this), callback)
         // Só numa rotação (mesma sessão) se conserva o estado; nunca depois de a app ir para segundo plano.
@@ -91,7 +105,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Um diálogo do sistema (ex.: autorização VPN) não passa pelo onStop/onStart; sem isto a
+        // exceção "ida às Definições" ficava ligada e a próxima saída por Home não bloqueava.
+        leavingForSettings = false
+        tunnel.setListener { state -> runOnUiThread { if (unlocked) showTunnelState(state) } }
         if (unlocked) refresh()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        tunnel.setListener(null)
     }
 
     override fun onStop() {
@@ -221,6 +244,12 @@ class MainActivity : AppCompatActivity() {
             addView(button("Ativar deteção de tentativas de desbloqueio") { enableAdmin() })
             addView(button("Verificar root") { rootCheck() })
             addView(button("Auditoria de uso de apps (24h)") { usageAudit() })
+            addView(TextView(context).apply { text = "\nTúnel seguro (WireGuard)"; textSize = 16f })
+            tunnelStatus = TextView(context)
+            addView(tunnelStatus)
+            addView(button("Importar configuração (.conf)") { openPicker() })
+            addView(button("Ligar / desligar túnel") { toggleTunnel() })
+            addView(button("Apagar configuração do túnel") { tunnel.deleteConfig(); showTunnelState(null) })
             addView(TextView(context).apply { text = "\nAlertas (toque para marcar como visto)"; textSize = 16f })
             addView(alertsBox)
         }
@@ -251,6 +280,69 @@ class MainActivity : AppCompatActivity() {
             alertsBox.addView(TextView(this).apply { text = "Sem alertas." })
         }
         alerts.take(50).forEach { alertsBox.addView(alertRow(it)) }
+        showTunnelState(null)
+    }
+
+    private fun showTunnelState(event: String?) {
+        val base = when {
+            !tunnel.hasStoredConfig() -> "sem configuração"
+            tunnel.isConnected() -> "LIGADO"
+            else -> "desligado"
+        }
+        tunnelStatus.text = "Túnel: $base" + (event?.takeIf { it.startsWith("erro") }?.let { " ($it)" } ?: "")
+    }
+
+    // ---------- túnel ----------
+
+    private fun openPicker() {
+        leavingForSettings = true
+        try {
+            pickConfig.launch(arrayOf("*/*"))
+        } catch (_: ActivityNotFoundException) {
+            leavingForSettings = false
+            tunnelStatus.text = "Este telemóvel não tem seletor de ficheiros."
+        }
+    }
+
+    private fun importConfig(uri: Uri) {
+        val text = try {
+            contentResolver.openInputStream(uri)?.use { input ->
+                // Um .conf tem poucas centenas de bytes; recusar ficheiros grandes evita abusos.
+                val bytes = input.readNBytesCompat(MAX_CONF_BYTES + 1)
+                if (bytes.size > MAX_CONF_BYTES) null else String(bytes, Charsets.UTF_8)
+            }
+        } catch (_: Exception) {
+            null
+        }
+        if (text == null) {
+            tunnelStatus.text = "Túnel: ficheiro ilegível ou demasiado grande."
+            return
+        }
+        tunnelStatus.text = try {
+            val check = tunnel.saveConfig(text)
+            "Túnel: configuração guardada (cifrada)." +
+                if (check.warnings.isEmpty()) "" else "\nAtenção: " + check.warnings.joinToString(" ")
+        } catch (e: IllegalArgumentException) {
+            "Túnel: configuração recusada. ${e.message}"
+        }
+    }
+
+    private fun toggleTunnel() {
+        if (!tunnel.hasStoredConfig()) {
+            tunnelStatus.text = "Túnel: importe primeiro uma configuração."
+            return
+        }
+        if (tunnel.isConnected()) {
+            tunnel.disconnect()
+            return
+        }
+        val consent = VpnService.prepare(this)
+        if (consent == null) {
+            tunnel.connect()
+        } else {
+            leavingForSettings = true
+            vpnConsent.launch(consent)
+        }
     }
 
     private fun alertRow(alert: Alert): TextView = TextView(this).apply {
@@ -359,5 +451,18 @@ class MainActivity : AppCompatActivity() {
         const val KEY_AUTHENTICATING = "authenticating"
         const val SETTINGS_GRACE_MS = 60_000L
         const val FAILED_READS_ALERT = 3
+        const val MAX_CONF_BYTES = 16 * 1024
     }
+}
+
+/** InputStream.readNBytes só existe a partir do Android 13. */
+private fun java.io.InputStream.readNBytesCompat(limit: Int): ByteArray {
+    val out = java.io.ByteArrayOutputStream()
+    val buf = ByteArray(4096)
+    while (out.size() < limit) {
+        val n = read(buf, 0, minOf(buf.size, limit - out.size()))
+        if (n < 0) break
+        out.write(buf, 0, n)
+    }
+    return out.toByteArray()
 }

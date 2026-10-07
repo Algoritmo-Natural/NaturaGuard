@@ -2,7 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Sem permissao INTERNET: o nucleo de vigilancia nao comunica com o exterior. -->
+    <!-- INTERNET so serve o tunel WireGuard escolhido pelo utilizador. O nucleo de
+         vigilancia continua sem enviar nada para fora do telemovel. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Necessaria para listar as apps instaladas e detetar as de fora da loja. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"

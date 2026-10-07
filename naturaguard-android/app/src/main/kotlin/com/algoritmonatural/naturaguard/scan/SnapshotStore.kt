@@ -26,6 +26,7 @@ class SnapshotStore(context: Context) {
                     admins = set(o, "admins"),
                     listeners = set(o, "listeners"),
                     sideloaded = set(o, "sideloaded"),
+                    userCerts = set(o, "userCerts"),
                     adbEnabled = o.optBoolean("adb", false),
                     devOptions = o.optBoolean("dev", false),
                     deviceSecure = o.optBoolean("secure", true),
@@ -45,6 +46,7 @@ class SnapshotStore(context: Context) {
             .put("admins", JSONArray(s.admins.toList()))
             .put("listeners", JSONArray(s.listeners.toList()))
             .put("sideloaded", JSONArray(s.sideloaded.toList()))
+            .put("userCerts", JSONArray(s.userCerts.toList()))
             .put("adb", s.adbEnabled)
             .put("dev", s.devOptions)
             .put("secure", s.deviceSecure)

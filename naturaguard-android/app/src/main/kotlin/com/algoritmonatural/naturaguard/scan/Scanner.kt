@@ -13,6 +13,8 @@ import com.algoritmonatural.naturaguard.rootdetection.RootDetector
 import com.algoritmonatural.naturaguard.shared.Notifier
 import com.algoritmonatural.naturaguard.shared.SecurityEvent
 import com.algoritmonatural.naturaguard.shared.Severity
+import java.security.KeyStore
+import java.security.cert.X509Certificate
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 
@@ -70,12 +72,24 @@ object Scanner {
             admins = admins,
             listeners = listeners,
             sideloaded = sideloaded,
+            userCerts = userCaCerts(),
             adbEnabled = Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) == 1,
             devOptions = Settings.Global.getInt(cr, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1,
             deviceSecure = keyguard?.isDeviceSecure ?: true,
             patchOld = patchAgeDays()?.let { it > 120 } ?: false,
             rootSuspected = RootDetector(context).isSuspected(),
         )
+    }
+
+    /** Le o armazem de certificados do sistema; os do utilizador tem o prefixo "user:". */
+    private fun userCaCerts(): Set<String> = try {
+        val store = KeyStore.getInstance("AndroidCAStore").apply { load(null) }
+        store.aliases().toList().filter { it.startsWith("user:") }.map { alias ->
+            val subject = (store.getCertificate(alias) as? X509Certificate)?.subjectX500Principal?.name
+            if (subject != null) "$subject ($alias)" else alias
+        }.toSet()
+    } catch (_: Exception) {
+        emptySet()
     }
 
     private fun isUserApp(info: ApplicationInfo): Boolean =
